@@ -1,0 +1,186 @@
+network 폴더 메모 (초보용)
+같은 폴더 .tf 는 파일 이름과 상관없이 한 프로젝트로 합쳐짐.
+명령은 반드시 이 폴더 안에서: terraform init / plan / apply / destroy
+
+형제 폴더 remote-backend = S3+Dynamo(장부 창고)만 만듦. 여기서 VPC/EC2 apply 하지 마.
+창고 폴더에서 destroy 하면 장부 버킷을 지우려 해서 사고 남.
+
+
+================================================
+파일 역할
+================================================
+
+provider.tf
+  AWS 랑  Speaks 할 준비 + state 를 어디에 둘지
+  terraform { required_providers }  = 플러그인 설치 (hashicorp/aws)
+  provider "aws"                   = 리전, 기본 태그
+  backend "s3"                     = 장부 파일을 S3에 저장
+
+  bucket         = 창고 건물 (remote-backend 랑 같음. 공유 OK)
+  key            = 그 안 파일 경로. network 전용이어야 함
+                   TerraformState/Lab/ex-network/terraform.tfstate
+  dynamodb_table = 동시 apply 잠금. 테이블도 공유, 파일(key)만 다름
+  region         = eu-central-1
+
+  리전을 required_providers 안에 넣지 마. provider "aws" 블록에 넣음.
+
+variables.tf
+  변수 "칸"만 선언. type, default
+  쓰는 쪽: var.subnet_cidr  var.default_name  var.vpc_cidr
+
+terraform.tfvars  (있으면)
+  그 칸에 실제 값. 파일 이름이 이거라 apply 가 자동으로 읽음
+  없으면 variables 의 default 사용
+
+local.tf
+  밖에서 안 넣는 내부 값
+  tag_header = "std11-"     ← Name 태그 접두사
+  azs        = data 로 받은 AZ 리스트 ["eu-central-1a", "b", "c"]
+
+data.tf
+  새로 안 만들고 AWS 에서 조회
+  aws_availability_zones  → 지금 리전의 사용 가능 AZ
+  resource 와 다름. resource 는 생성, data 는 읽기
+
+main.tf
+  네트워크: VPC, 서브넷, IGW, NAT, 라우트
+
+sg.tf
+  보안그룹. compute 에서 .id 로 참조 (import 아님, 같은 폴더라 됨)
+
+compute.tf
+  EC2 + user_data(nginx) + output(퍼블릭 IP)
+
+
+================================================
+리소스 쓰는 법 (앞으로 작성할 때)
+================================================
+
+기본 모양
+  resource "종류" "내가붙이는이름" {
+    옵션 = 값
+  }
+
+참조
+  종류.이름.속성
+  예: aws_vpc.std11_vpc.id
+      aws_subnet.std11_public_subnet["eu-central-1a"].id
+
+for_each 쓴 리소스는 .id 가 없음. 키로 고름
+  잘못: aws_subnet.std11_public_subnet.id
+  맞음: aws_subnet.std11_public_subnet["eu-central-1a"].id
+  또는 for_each 안에서 each.key / each.value.id
+
+태그 Name 은 "${local.tag_header}뭔가" 로 통일하면 콘솔에서 std11- 로 보임
+
+
+================================================
+main.tf 리소스
+================================================
+
+aws_vpc.std11_vpc
+  cidr_block           전체 대역 10.0.0.0/16
+  enable_dns_support   RDS 이름 풀리게. 끄면 Unknown host
+  enable_dns_hostnames 내부 호스트 이름
+  instance_tenancy     default (공유 하드웨어)
+
+aws_subnet.std11_public_subnet   (for_each = AZ 3개)
+  vpc_id
+  cidr_block        = var.subnet_cidr[0][each.key]
+                    [0] = 퍼블릭 줄, each.key = eu-central-1a 같은 AZ
+  map_public_ip_on_launch = true   ← 공인 IP 자동. 퍼블릭의 핵심
+  availability_zone = each.key
+
+aws_subnet.std11_private_subnet
+  위와 같되 map_public_ip 없음, cidr 는 var.subnet_cidr[1][...]
+
+aws_internet_gateway.std11_igw
+  퍼블릭이 인터넷 나가는 문. vpc_id 만 있으면 Attach 됨
+
+aws_eip.std11_nat_eip
+  domain = "vpc"   NAT에 붙일 고정 공인 IP
+
+aws_nat_gateway.std11_nat_gw
+  allocation_id = EIP
+  subnet_id     = 퍼블릭 1a  (프라이빗에 두면 안 됨)
+  depends_on    = IGW 먼저
+
+라우트 순서: 테이블 만들기 → 서브넷 연결(association) → 0.0.0.0/0 목적지
+
+퍼블릭 RT
+  0.0.0.0/0 → IGW (gateway_id)
+  association 없으면 테이블만 있고 서브넷은 안 탐 (예전에 빠진 부분)
+
+프라이빗 RT (AZ마다 for_each)
+  0.0.0.0/0 → NAT
+  NAT 는 gateway_id 말고 nat_gateway_id  (gateway_id 는 IGW용)
+
+
+================================================
+sg.tf
+================================================
+
+역할별로 쪼개는 게 수업 방식. 한 SG에 22+80 다 넣어도 동작은 함.
+
+std11_ssh_sg            인바운드 22
+std11_external_alb_sg   인바운드 80, 443
+egress protocol = "-1"  모든 프로토콜 나감
+
+인스턴스에 여러 개 붙일 때
+  vpc_security_group_ids = [ aws_security_group.xxx.id, aws_security_group.yyy.id ]
+
+
+================================================
+compute.tf
+================================================
+
+aws_instance.std11_ec2
+  ami              OS 이미지. 리전마다 ID 다름. 인도 AMI 를 프랑크푸르트에 넣으면 에러
+  instance_type    t3.micro
+  subnet_id        퍼블릭 1a (밖에서 SSH/웹 하려면 퍼블릭)
+  associate_public_ip_address = true
+  vpc_security_group_ids      SSH + 웹 SG
+  root_block_device           루트 EBS (크기, gp3, 인스턴스 삭제 시 디스크 삭제)
+  user_data                   첫 부팅 스크립트
+    #!/bin/bash 앞에 공백 금지
+    apt 패키지는 nginx  (nginx:alpine 은 도커 이름)
+    Ubuntu 면 apt, Amazon Linux 면 dnf/yum
+  user_data_replace_on_change 스크립트 바꾸면 인스턴스 교체
+
+output
+  terraform apply 끝에 퍼블릭 IP 출력
+  http://그IP   (https 말고)
+
+
+================================================
+명령 (이 폴더)
+================================================
+
+terraform init              처음, 또는 backend/provider 바꾼 뒤
+terraform init -reconfigure backend 설정만 다시 읽기 (장부 안 옮김)
+terraform plan              미리보기
+terraform apply             생성/변경
+terraform destroy           이 폴더 장부에 있는 것만 삭제 (창고 버킷 아님)
+terraform output            IP 다시 보기
+terraform state rm 이름     실물은 두고 장부에서만 뺌
+                            (network 장부에 S3 버킷이 섞였을 때 씀)
+
+
+================================================
+자주 막힌 것
+================================================
+
+1. for_each 리소스에 .id
+2. backend 의 bucket 은 같아도 key 가 같으면 VPC 장부와 창고 장부가 섞임
+   → network apply 가 버킷을 destroy 하려고 함
+   → terraform state rm aws_s3_bucket.terraform-state
+3. Dynamo 락 테이블이 없으면 ResourceNotFound
+   → remote-backend 에서 테이블만 apply (-lock=false 필요할 수 있음)
+4. 이미 있는 버킷을 또 만들면 BucketAlreadyOwnedByYou
+   → terraform import ... (창고 폴더에서)
+5. user_data 공백 / 잘못된 패키지 이름 → 인스턴스는 뜨는데 nginx 접속 안 됨
+6. AMI 는 리전 전용
+
+
+ec2의 유저데이터 로그 확인 명령어
+sudo tail -f /var/log/cloud-init-output.log

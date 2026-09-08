@@ -22,11 +22,11 @@ terraform {
       #   region = "eu-central-1"
     }
   }
-  # 같은 S3 버킷(창고)을 씀. key 만 이 폴더 전용 파일
-  # bucket = 공유, key = 이 프로젝트 장부 경로 (network 랑 절대 같으면 안 됨)
+  # 창고(버킷)는 remote-backend 에서 만든 거 그대로 공유
+  # key 만 network 전용. 여기랑 remote-backend key 가 같으면 장부가 섞임
   backend "s3" {
     bucket         = "bipa17-std11-terraform-state-bucket"
-    key            = "TerraformState/Lab/remote-backend/terraform.tfstate"
+    key            = "TerraformState/Lab/ex-network/terraform.tfstate"
     region         = "eu-central-1"
     dynamodb_table = "std11-terraform-state-lock"
     encrypt        = true
