@@ -30,7 +30,7 @@ terraform {
   # key 만 network 전용. 여기랑 remote-backend key 가 같으면 장부가 섞임
   backend "s3" {
     bucket         = "bipa17-std11-terraform-state-bucket"
-    key            = "TerraformState/Lab/ex-network/terraform.tfstate"
+    key            = "TerraformState/Lab/module/terraform.tfstate"
     region         = "eu-central-1"
     dynamodb_table = "std11-terraform-state-lock"
     encrypt        = true
@@ -46,13 +46,13 @@ provider "aws" {
   }
 }
 
-# ##########################################################################################
-# 2. 환경변수 설정 블록
-# ==========================================================================================
-
-
-
-
-
-
-
+provider "aws" {
+  region = "eu-central-1"
+  alias  = "std11"
+  default_tags {
+    tags = {
+      Class = "bipa17"
+      Owner = "std11"
+    }
+  }
+}

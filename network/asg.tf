@@ -76,6 +76,18 @@ resource "aws_lb_listener" "std11_nginx_alb_listener" {
   #     }
   #   }
 }
+resource "aws_lb_listener" "std11_nginx_alb_listener_https" {
+  load_balancer_arn = aws_lb.std11_nginx_alb.arn
+  port              = 443                                          # 사용자가 접근하는 포트
+  protocol          = "HTTPS"                                      # 프로토콜
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-Res-PQ-2025-09" # "ELBSecurityPolicy-TLS13-1-2-2021-06" # 권장 SSL 보안 정책
+  certificate_arn   = var.acm_certificate_arn
+
+  default_action {
+    type             = "forward"                              # 포워딩
+    target_group_arn = aws_lb_target_group.std11_nginx_tg.arn # 대상 그룹
+  }
+}
 
 # #########################################################################
 # 리스너에 경로 규칙 추가
@@ -87,6 +99,15 @@ resource "aws_lb_listener_rule" "std11_nginx_alb_listener_rule" {
   action {
     type             = "forward"                              # 포워딩
     target_group_arn = aws_lb_target_group.std11_nginx_tg.arn # 대상 그룹
+  }
+  transform {
+    type = "url-rewrite"
+    url_rewrite_config {
+      rewrite {
+        regex   = "^/api/?(.*)" # 정규식
+        replace = "/$1"         # 교체 값
+      }
+    }
   }
   condition {
     path_pattern {
@@ -104,8 +125,8 @@ output "std11_nginx_alb_listener_arn" {
 
 resource "aws_autoscaling_group" "std11_nginx_asg" {
   name             = "${local.tag_header}nginx-asg"
-  min_size         = 1
-  max_size         = 3
+  min_size         = 2
+  max_size         = 2
   desired_capacity = 2
   # 네트워크
   vpc_zone_identifier = [
@@ -128,6 +149,9 @@ resource "aws_autoscaling_group" "std11_nginx_asg" {
     value               = "${local.tag_header}nginx-asg"
     propagate_at_launch = true
   }
+
+  # 지금 3→2 줄이는 동안 apply 가 10분 기다리지 않게
+  wait_for_capacity_timeout = "0"
 }
 
 
@@ -135,46 +159,42 @@ resource "aws_autoscaling_group" "std11_nginx_asg" {
 # 오토스케일링 정책 생성 인스턴스 수량 조정의 기준
 # #########################################################################
 
-resource "aws_autoscaling_policy" "std11_nginx_asg_policy" {
-  name                   = "${local.tag_header}nginx-asg-policy"
-  autoscaling_group_name = aws_autoscaling_group.std11_nginx_asg.name
-
-  policy_type = "TargetTrackingScaling" # 목표 값을 추적하는 정책
-
-  target_tracking_configuration {
-    predefined_metric_specification {
-      predefined_metric_type = "ASGAverageCPUUtilization" # 평균 cpu 사용량 기준
-    }
-    target_value = 50 # 목표 cpu 사용량 (50~70% 권장)
-  }
-}
+# 작업 중 2대 고정. 다시 스케일 켜려면 주석 해제
+# resource "aws_autoscaling_policy" "std11_nginx_asg_policy" {
+#   name                   = "${local.tag_header}nginx-asg-policy"
+#   autoscaling_group_name = aws_autoscaling_group.std11_nginx_asg.name
+#
+#   policy_type = "TargetTrackingScaling"
+#
+#   target_tracking_configuration {
+#     predefined_metric_specification {
+#       predefined_metric_type = "ASGAverageCPUUtilization"
+#     }
+#     target_value = 50
+#   }
+# }
 
 
 # #########################################################################
-# asg 예약 정책
+# asg 예약 정책 (작업 끝나면 주석 해제)
 # #########################################################################
 
-resource "aws_autoscaling_schedule" "std11_nginx_asg_schedule_out" {
-  scheduled_action_name  = "${local.tag_header}nginx-asg-schedule"
-  autoscaling_group_name = aws_autoscaling_group.std11_nginx_asg.name
-
-  # 인스턴스 수량 조정
-  min_size         = 2
-  max_size         = 5
-  desired_capacity = 4
-
-  recurrence = "09 13 * * 1-5" # 매일 13시 0분 실행 (월~금)
-  time_zone  = "Asia/Seoul"    # 서울 시간 최신 aws 프로바이더에서는 time_zone 가능
-}
-
-resource "aws_autoscaling_schedule" "std11_nginx_asg_schedule_in" {
-  scheduled_action_name  = "${local.tag_header}nginx-asg-schedule-in"
-  autoscaling_group_name = aws_autoscaling_group.std11_nginx_asg.name
-
-  min_size         = 1
-  max_size         = 2
-  desired_capacity = 1
-
-  recurrence = "11 13 * * 1-5" # 매일 18시 0분 실행 (월~금)
-  time_zone  = "Asia/Seoul"    # 서울 시간 최신 aws 프로바이더에서는 time_zone 가능
-}
+# resource "aws_autoscaling_schedule" "std11_nginx_asg_schedule_out" {
+#   scheduled_action_name  = "${local.tag_header}nginx-asg-schedule"
+#   autoscaling_group_name = aws_autoscaling_group.std11_nginx_asg.name
+#   min_size               = 2
+#   max_size               = 5
+#   desired_capacity       = 4
+#   recurrence             = "09 13 * * 1-5"
+#   time_zone              = "Asia/Seoul"
+# }
+#
+# resource "aws_autoscaling_schedule" "std11_nginx_asg_schedule_in" {
+#   scheduled_action_name  = "${local.tag_header}nginx-asg-schedule-in"
+#   autoscaling_group_name = aws_autoscaling_group.std11_nginx_asg.name
+#   min_size               = 1
+#   max_size               = 2
+#   desired_capacity       = 1
+#   recurrence             = "11 13 * * 1-5"
+#   time_zone              = "Asia/Seoul"
+# }
