@@ -97,12 +97,18 @@ resource "aws_route_table" "std11_private_rt" {
   }
 }
 
+# 프라이빗 서브넷과 그 AZ 의 RT 를 연결.
+# 이게 없으면 RT 만 있고 서브넷은 VPC 기본 테이블을 탐 (NAT 경로 안 탐)
+# 1a 서브넷 ↔ 1a RT, 1b ↔ 1b ... 짝이 맞아야 함
 resource "aws_route_table_association" "std11_private_rt_assoc" {
   for_each       = toset(local.azs)
   subnet_id      = aws_subnet.std11_private_subnet[each.key].id
   route_table_id = aws_route_table.std11_private_rt[each.key].id
 }
 
+# RT 에 "인터넷(0.0.0.0/0)은 NAT 로 가라" 경로를 추가.
+# 프라이빗 서브넷은 퍼블릭 IP 가 없어서 IGW 로 나가면 안 됨.
+# EKS 노드가 ECR/API 를 보려면 이 경로 + NAT 가 살아 있어야 함
 resource "aws_route" "std11_private_rt_route" {
   for_each               = toset(local.azs)
   route_table_id         = aws_route_table.std11_private_rt[each.key].id
